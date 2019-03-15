@@ -71,6 +71,8 @@ public:
         unique_lock<std::mutex> lock(mMutexNewKFs);
         return mlNewKeyFrames.size();
     }
+    
+    void WaitLoopExecution();
 
 protected:
 
@@ -121,6 +123,11 @@ protected:
 
     bool mbAcceptKeyFrames;
     std::mutex mMutexAccept;
+    
+    
+    std::mutex mMutexExecution;
+    
+    std::ofstream outfile;
 };
 
 } //namespace ORB_SLAM

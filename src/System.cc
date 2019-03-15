@@ -60,9 +60,15 @@ System::System(const string &strVocFile, const string &strSettingsFile, const eS
 
     //Load ORB Vocabulary
     cout << endl << "Loading ORB Vocabulary. This could take a while..." << endl;
-
-    mpVocabulary = new ORBVocabulary();
-    bool bVocLoad = mpVocabulary->loadFromTextFile(strVocFile);
+	mpVocabulary = new ORBVocabulary();
+	
+	bool bVocLoad = false;
+    if(strVocFile.substr( strVocFile.length() - 4) == ".bin")
+        bVocLoad = mpVocabulary->loadFromBinaryFile(strVocFile);
+    else
+        bVocLoad = mpVocabulary->loadFromTextFile(strVocFile);
+    
+    //bool bVocLoad = mpVocabulary->loadFromTextFile(strVocFile);
     if(!bVocLoad)
     {
         cerr << "Wrong path to vocabulary. " << endl;
@@ -85,6 +91,9 @@ System::System(const string &strVocFile, const string &strSettingsFile, const eS
     //(it will live in the main thread of execution, the one that called this constructor)
     mpTracker = new Tracking(this, mpVocabulary, mpFrameDrawer, mpMapDrawer,
                              mpMap, mpKeyFrameDatabase, strSettingsFile, mSensor);
+#ifdef PIPELINE_FEATURE
+    mptTracking = new thread(&ORB_SLAM2::Tracking::Run,mpTracker);                         
+#endif
 
     //Initialize the Local Mapping thread and launch
     mpLocalMapper = new LocalMapping(mpMap, mSensor==MONOCULAR);
@@ -111,9 +120,41 @@ System::System(const string &strVocFile, const string &strSettingsFile, const eS
 
     mpLoopCloser->SetTracker(mpTracker);
     mpLoopCloser->SetLocalMapper(mpLocalMapper);
+    
+    
+    cpu_set_t cpuset;
+	CPU_ZERO(&cpuset);
+	CPU_SET(3, &cpuset);
+	int rc = pthread_setaffinity_np(mptLocalMapping->native_handle(),
+									sizeof(cpu_set_t), &cpuset);
+	if (rc != 0) {
+	  std::cerr << "Error calling pthread_setaffinity_np: " << rc << "\n";
+	}
+	
+	CPU_ZERO(&cpuset);
+	CPU_SET(4, &cpuset);
+	rc = pthread_setaffinity_np(mptLoopClosing->native_handle(),
+									sizeof(cpu_set_t), &cpuset);
+	if (rc != 0) {
+	  std::cerr << "Error calling pthread_setaffinity_np: " << rc << "\n";
+	}
+
+    CPU_ZERO(&cpuset);
+	CPU_SET(0, &cpuset);
+#ifdef PIPELINE_FEATURE
+	rc = pthread_setaffinity_np(mptTracking->native_handle(),
+									sizeof(cpu_set_t), &cpuset);
+#else
+	rc = pthread_setaffinity_np(pthread_self(),
+									sizeof(cpu_set_t), &cpuset);
+#endif
+
+	if (rc != 0) {
+	  std::cerr << "Error calling pthread_setaffinity_np: " << rc << "\n";
+	}
 }
 
-cv::Mat System::TrackStereo(const cv::Mat &imLeft, const cv::Mat &imRight, const double &timestamp)
+cv::Mat System::TrackStereo(const cv::Mat &imLeft, const cv::Mat &imRight, const double &timestamp, int sequenceID)
 {
     if(mSensor!=STEREO)
     {
@@ -155,7 +196,7 @@ cv::Mat System::TrackStereo(const cv::Mat &imLeft, const cv::Mat &imRight, const
     }
     }
 
-    cv::Mat Tcw = mpTracker->GrabImageStereo(imLeft,imRight,timestamp);
+    cv::Mat Tcw = mpTracker->GrabImageStereo(imLeft,imRight,timestamp, sequenceID);
 
     unique_lock<mutex> lock2(mMutexState);
     mTrackingState = mpTracker->mState;
@@ -164,7 +205,7 @@ cv::Mat System::TrackStereo(const cv::Mat &imLeft, const cv::Mat &imRight, const
     return Tcw;
 }
 
-cv::Mat System::TrackRGBD(const cv::Mat &im, const cv::Mat &depthmap, const double &timestamp)
+cv::Mat System::TrackRGBD(const cv::Mat &im, const cv::Mat &depthmap, const double &timestamp, int sequenceID)
 {
     if(mSensor!=RGBD)
     {
@@ -206,7 +247,7 @@ cv::Mat System::TrackRGBD(const cv::Mat &im, const cv::Mat &depthmap, const doub
     }
     }
 
-    cv::Mat Tcw = mpTracker->GrabImageRGBD(im,depthmap,timestamp);
+    cv::Mat Tcw = mpTracker->GrabImageRGBD(im,depthmap,timestamp, sequenceID);
 
     unique_lock<mutex> lock2(mMutexState);
     mTrackingState = mpTracker->mState;
@@ -215,7 +256,7 @@ cv::Mat System::TrackRGBD(const cv::Mat &im, const cv::Mat &depthmap, const doub
     return Tcw;
 }
 
-cv::Mat System::TrackMonocular(const cv::Mat &im, const double &timestamp)
+cv::Mat System::TrackMonocular(const cv::Mat &im, const double &timestamp, int sequenceID)
 {
     if(mSensor!=MONOCULAR)
     {
@@ -257,12 +298,14 @@ cv::Mat System::TrackMonocular(const cv::Mat &im, const double &timestamp)
     }
     }
 
-    cv::Mat Tcw = mpTracker->GrabImageMonocular(im,timestamp);
+    cv::Mat Tcw = mpTracker->GrabImageMonocular(im,timestamp, sequenceID);
 
     unique_lock<mutex> lock2(mMutexState);
     mTrackingState = mpTracker->mState;
-    mTrackedMapPoints = mpTracker->mCurrentFrame.mvpMapPoints;
-    mTrackedKeyPointsUn = mpTracker->mCurrentFrame.mvKeysUn;
+    /*mTrackedMapPoints = mpTracker->mCurrentFrame.mvpMapPoints;
+    mTrackedKeyPointsUn = mpTracker->mCurrentFrame.mvKeysUn;*/
+    mTrackedMapPoints = mpTracker->mLastFrameProcessed.mvpMapPoints;
+    mTrackedKeyPointsUn = mpTracker->mLastFrameProcessed.mvKeysUn;
 
     return Tcw;
 }
@@ -300,6 +343,7 @@ void System::Reset()
 
 void System::Shutdown()
 {
+	mpTracker->RequestFinish();
     mpLocalMapper->RequestFinish();
     mpLoopCloser->RequestFinish();
     if(mpViewer)
@@ -310,8 +354,14 @@ void System::Shutdown()
     }
 
     // Wait until all thread have effectively stopped
-    while(!mpLocalMapper->isFinished() || !mpLoopCloser->isFinished() || mpLoopCloser->isRunningGBA())
+    while(!mpLocalMapper->isFinished() || !mpLoopCloser->isFinished() || mpLoopCloser->isRunningGBA() || !mpTracker->isFinished())
     {
+		/*std::cout << "---" << std::endl;
+		std::cout << mpLocalMapper->isFinished() << std::endl;
+		std::cout << mpLoopCloser->isFinished() << std::endl;
+		std::cout << mpLoopCloser->isRunningGBA() << std::endl;
+		std::cout << mpTracker->isFinished() << std::endl;
+		*/
         usleep(5000);
     }
 
@@ -319,14 +369,15 @@ void System::Shutdown()
         pangolin::BindToContext("ORB-SLAM2: Map Viewer");
 }
 
-void System::SaveTrajectoryTUM(const string &filename)
+void System::SaveTrajectoryTUM(const string &filename, double time_multiplier)
 {
     cout << endl << "Saving camera trajectory to " << filename << " ..." << endl;
-    if(mSensor==MONOCULAR)
+    double inv_time_multiplier = 1/time_multiplier;
+    /*if(mSensor==MONOCULAR)
     {
         cerr << "ERROR: SaveTrajectoryTUM cannot be used for monocular." << endl;
         return;
-    }
+    }*/
 
     vector<KeyFrame*> vpKFs = mpMap->GetAllKeyFrames();
     sort(vpKFs.begin(),vpKFs.end(),KeyFrame::lId);
@@ -348,8 +399,10 @@ void System::SaveTrajectoryTUM(const string &filename)
     list<ORB_SLAM2::KeyFrame*>::iterator lRit = mpTracker->mlpReferences.begin();
     list<double>::iterator lT = mpTracker->mlFrameTimes.begin();
     list<bool>::iterator lbL = mpTracker->mlbLost.begin();
+    list<int>::iterator lis = mpTracker->mliSequenceID.begin();
+    
     for(list<cv::Mat>::iterator lit=mpTracker->mlRelativeFramePoses.begin(),
-        lend=mpTracker->mlRelativeFramePoses.end();lit!=lend;lit++, lRit++, lT++, lbL++)
+        lend=mpTracker->mlRelativeFramePoses.end();lit!=lend;lit++, lRit++, lT++, lbL++, lis++)
     {
         if(*lbL)
             continue;
@@ -373,17 +426,82 @@ void System::SaveTrajectoryTUM(const string &filename)
 
         vector<float> q = Converter::toQuaternion(Rwc);
 
-        f << setprecision(6) << *lT << " " <<  setprecision(9) << twc.at<float>(0) << " " << twc.at<float>(1) << " " << twc.at<float>(2) << " " << q[0] << " " << q[1] << " " << q[2] << " " << q[3] << endl;
+        //f << (*lis)+1 << ":" << setprecision(6) << *lT << " " <<  setprecision(9) << twc.at<float>(0) << " " << twc.at<float>(1) << " " << twc.at<float>(2) << " " << q[0] << " " << q[1] << " " << q[2] << " " << q[3] << endl;
+        //f << (*lis)+1 << ":" << setprecision(6) << ((*lis)+1) * 0.1  << " " <<  setprecision(9) << twc.at<float>(0) << " " << twc.at<float>(1) << " " << twc.at<float>(2) << " " << q[0] << " " << q[1] << " " << q[2] << " " << q[3] << endl;
+        f << setprecision(6) << *lT * inv_time_multiplier << " " <<  setprecision(9) << twc.at<float>(0) << " " << twc.at<float>(1) << " " << twc.at<float>(2) << " " << q[0] << " " << q[1] << " " << q[2] << " " << q[3] << endl;
+    }
+    f.close();
+    cout << endl << "trajectory saved!" << endl;
+}
+
+void System::SaveTrajectoryTUMLost(const string &filename, double time_multiplier)
+{
+    cout << endl << "Saving camera trajectory w/lost to " << filename << " ..." << endl;
+    double inv_time_multiplier = 1/time_multiplier;
+    /*if(mSensor==MONOCULAR)
+    {
+        cerr << "ERROR: SaveTrajectoryTUM cannot be used for monocular." << endl;
+        return;
+    }*/
+
+    vector<KeyFrame*> vpKFs = mpMap->GetAllKeyFrames();
+    sort(vpKFs.begin(),vpKFs.end(),KeyFrame::lId);
+
+    // Transform all keyframes so that the first keyframe is at the origin.
+    // After a loop closure the first keyframe might not be at the origin.
+    cv::Mat Two = vpKFs[0]->GetPoseInverse();
+
+    ofstream f;
+    f.open(filename.c_str());
+    f << fixed;
+
+    // Frame pose is stored relative to its reference keyframe (which is optimized by BA and pose graph).
+    // We need to get first the keyframe pose and then concatenate the relative transformation.
+    // Frames not localized (tracking failure) are not saved.
+
+    // For each frame we have a reference keyframe (lRit), the timestamp (lT) and a flag
+    // which is true when tracking failed (lbL).
+    list<ORB_SLAM2::KeyFrame*>::iterator lRit = mpTracker->mlpReferences.begin();
+    list<double>::iterator lT = mpTracker->mlFrameTimes.begin();
+    list<bool>::iterator lbL = mpTracker->mlbLost.begin();
+    list<int>::iterator lis = mpTracker->mliSequenceID.begin();
+    
+    for(list<cv::Mat>::iterator lit=mpTracker->mlRelativeFramePoses.begin(),
+        lend=mpTracker->mlRelativeFramePoses.end();lit!=lend;lit++, lRit++, lT++, lbL++, lis++)
+    {
+        KeyFrame* pKF = *lRit;
+
+        cv::Mat Trw = cv::Mat::eye(4,4,CV_32F);
+
+        // If the reference keyframe was culled, traverse the spanning tree to get a suitable keyframe.
+        while(pKF->isBad())
+        {
+            Trw = Trw*pKF->mTcp;
+            pKF = pKF->GetParent();
+        }
+
+        Trw = Trw*pKF->GetPose()*Two;
+
+        cv::Mat Tcw = (*lit)*Trw;
+        cv::Mat Rwc = Tcw.rowRange(0,3).colRange(0,3).t();
+        cv::Mat twc = -Rwc*Tcw.rowRange(0,3).col(3);
+
+        vector<float> q = Converter::toQuaternion(Rwc);
+
+        //f << (*lis)+1 << ":" << setprecision(6) << *lT << " " <<  setprecision(9) << twc.at<float>(0) << " " << twc.at<float>(1) << " " << twc.at<float>(2) << " " << q[0] << " " << q[1] << " " << q[2] << " " << q[3] << endl;
+        //f << (*lis)+1 << ":" << setprecision(6) << ((*lis)+1) * 0.1  << " " <<  setprecision(9) << twc.at<float>(0) << " " << twc.at<float>(1) << " " << twc.at<float>(2) << " " << q[0] << " " << q[1] << " " << q[2] << " " << q[3] << endl;
+        f << setprecision(6) << *lT * inv_time_multiplier << " " <<  setprecision(9) << twc.at<float>(0) << " " << twc.at<float>(1) << " " << twc.at<float>(2) << " " << q[0] << " " << q[1] << " " << q[2] << " " << q[3] << endl;
     }
     f.close();
     cout << endl << "trajectory saved!" << endl;
 }
 
 
-void System::SaveKeyFrameTrajectoryTUM(const string &filename)
+void System::SaveKeyFrameTrajectoryTUM(const string &filename, double time_multiplier)
 {
     cout << endl << "Saving keyframe trajectory to " << filename << " ..." << endl;
-
+	double inv_time_multiplier = 1/time_multiplier;
+    
     vector<KeyFrame*> vpKFs = mpMap->GetAllKeyFrames();
     sort(vpKFs.begin(),vpKFs.end(),KeyFrame::lId);
 
@@ -407,9 +525,12 @@ void System::SaveKeyFrameTrajectoryTUM(const string &filename)
         cv::Mat R = pKF->GetRotation().t();
         vector<float> q = Converter::toQuaternion(R);
         cv::Mat t = pKF->GetCameraCenter();
-        f << setprecision(6) << pKF->mTimeStamp << setprecision(7) << " " << t.at<float>(0) << " " << t.at<float>(1) << " " << t.at<float>(2)
-          << " " << q[0] << " " << q[1] << " " << q[2] << " " << q[3] << endl;
-
+        cv::Mat twc = t;
+        //f << pKF->sequenceID+1 << ":"  << setprecision(6) << pKF->mTimeStamp << setprecision(7) << " " << t.at<float>(0) << " " << t.at<float>(1) << " " << t.at<float>(2)
+        //  << " " << q[0] << " " << q[1] << " " << q[2] << " " << q[3] << endl;
+        //f << pKF->sequenceID+1 << ":"  << setprecision(6) << (pKF->sequenceID+1) * 0.1 << setprecision(7) << " " << t.at<float>(0) << " " << t.at<float>(1) << " " << t.at<float>(2)
+        //  << " " << q[0] << " " << q[1] << " " << q[2] << " " << q[3] << endl;
+        f << setprecision(6) << pKF->mTimeStamp * inv_time_multiplier << " " <<  setprecision(9) << twc.at<float>(0) << " " << twc.at<float>(1) << " " << twc.at<float>(2) << " " << q[0] << " " << q[1] << " " << q[2] << " " << q[3] << endl;
     }
 
     f.close();
@@ -419,11 +540,11 @@ void System::SaveKeyFrameTrajectoryTUM(const string &filename)
 void System::SaveTrajectoryKITTI(const string &filename)
 {
     cout << endl << "Saving camera trajectory to " << filename << " ..." << endl;
-    if(mSensor==MONOCULAR)
+    /*if(mSensor==MONOCULAR)
     {
         cerr << "ERROR: SaveTrajectoryKITTI cannot be used for monocular." << endl;
         return;
-    }
+    }*/
 
     vector<KeyFrame*> vpKFs = mpMap->GetAllKeyFrames();
     sort(vpKFs.begin(),vpKFs.end(),KeyFrame::lId);
@@ -444,10 +565,12 @@ void System::SaveTrajectoryKITTI(const string &filename)
     // which is true when tracking failed (lbL).
     list<ORB_SLAM2::KeyFrame*>::iterator lRit = mpTracker->mlpReferences.begin();
     list<double>::iterator lT = mpTracker->mlFrameTimes.begin();
-    for(list<cv::Mat>::iterator lit=mpTracker->mlRelativeFramePoses.begin(), lend=mpTracker->mlRelativeFramePoses.end();lit!=lend;lit++, lRit++, lT++)
+    list<int>::iterator lis = mpTracker->mliSequenceID.begin();
+    
+    for(list<cv::Mat>::iterator lit=mpTracker->mlRelativeFramePoses.begin(), lend=mpTracker->mlRelativeFramePoses.end();lit!=lend;lit++, lRit++, lT++,lis++)
     {
         ORB_SLAM2::KeyFrame* pKF = *lRit;
-
+        
         cv::Mat Trw = cv::Mat::eye(4,4,CV_32F);
 
         while(pKF->isBad())
@@ -463,7 +586,7 @@ void System::SaveTrajectoryKITTI(const string &filename)
         cv::Mat Rwc = Tcw.rowRange(0,3).colRange(0,3).t();
         cv::Mat twc = -Rwc*Tcw.rowRange(0,3).col(3);
 
-        f << setprecision(9) << Rwc.at<float>(0,0) << " " << Rwc.at<float>(0,1)  << " " << Rwc.at<float>(0,2) << " "  << twc.at<float>(0) << " " <<
+        f << (*lis)+1 << ":" << setprecision(9) << Rwc.at<float>(0,0) << " " << Rwc.at<float>(0,1)  << " " << Rwc.at<float>(0,2) << " "  << twc.at<float>(0) << " " <<
              Rwc.at<float>(1,0) << " " << Rwc.at<float>(1,1)  << " " << Rwc.at<float>(1,2) << " "  << twc.at<float>(1) << " " <<
              Rwc.at<float>(2,0) << " " << Rwc.at<float>(2,1)  << " " << Rwc.at<float>(2,2) << " "  << twc.at<float>(2) << endl;
     }

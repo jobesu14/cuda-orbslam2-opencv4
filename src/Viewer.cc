@@ -49,6 +49,8 @@ Viewer::Viewer(System* pSystem, FrameDrawer *pFrameDrawer, MapDrawer *pMapDrawer
     mViewpointY = fSettings["Viewer.ViewpointY"];
     mViewpointZ = fSettings["Viewer.ViewpointZ"];
     mViewpointF = fSettings["Viewer.ViewpointF"];
+    
+    viewer = this;
 }
 
 void Viewer::Run()
@@ -136,6 +138,15 @@ void Viewer::Run()
 
         cv::Mat im = mpFrameDrawer->DrawFrame();
         cv::imshow("ORB-SLAM2: Current Frame",im);
+        if(!wnds.empty()) {
+        while(!wnds.empty()) {
+			cv::imshow(wnds.front(), imgs.front());
+			wnds.pop_front();
+			imgs.pop_front();
+			cv::waitKey(10);
+		}
+		cv::waitKey(0);
+		}
         cv::waitKey(mT);
 
         if(menuReset)
@@ -229,4 +240,10 @@ void Viewer::Release()
     mbStopped = false;
 }
 
+void Viewer::push_back(std::string s, cv::Mat img) {
+	wnds.push_back(s);
+	imgs.push_back(img);
+}
+
+Viewer* Viewer::viewer;
 }

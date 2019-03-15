@@ -655,11 +655,15 @@ void Optimizer::LocalBundleAdjustment(KeyFrame *pKF, bool* pbStopFlag, Map* pMap
     if(pbStopFlag)
         if(*pbStopFlag)
             return;
+    //std::cout << "Optimization strt, bool\t" << *pbStopFlag << std::endl;
 
     optimizer.initializeOptimization();
     optimizer.optimize(5);
+    //optimizer.optimize(1);
+    //std::cout << "Optimization end, bool\t" << *pbStopFlag << std::endl;
 
     bool bDoMore= true;
+    //bDoMore= false;
 
     if(pbStopFlag)
         if(*pbStopFlag)
@@ -667,6 +671,7 @@ void Optimizer::LocalBundleAdjustment(KeyFrame *pKF, bool* pbStopFlag, Map* pMap
 
     if(bDoMore)
     {
+		//std::cout << "2nd round opt, bool:\t" << *pbStopFlag << std::endl;
 
     // Check inlier observations
     for(size_t i=0, iend=vpEdgesMono.size(); i<iend;i++)
@@ -707,6 +712,7 @@ void Optimizer::LocalBundleAdjustment(KeyFrame *pKF, bool* pbStopFlag, Map* pMap
     optimizer.optimize(10);
 
     }
+    //std::cout << " - After domore, bool:\t" << *pbStopFlag << std::endl;
 
     vector<pair<KeyFrame*,MapPoint*> > vToErase;
     vToErase.reserve(vpEdgesMono.size()+vpEdgesStereo.size());

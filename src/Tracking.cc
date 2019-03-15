@@ -37,6 +37,9 @@
 
 #include<mutex>
 
+#include <chrono>
+#include <ratio>
+
 
 using namespace std;
 
@@ -46,7 +49,7 @@ namespace ORB_SLAM2
 Tracking::Tracking(System *pSys, ORBVocabulary* pVoc, FrameDrawer *pFrameDrawer, MapDrawer *pMapDrawer, Map *pMap, KeyFrameDatabase* pKFDB, const string &strSettingPath, const int sensor):
     mState(NO_IMAGES_YET), mSensor(sensor), mbOnlyTracking(false), mbVO(false), mpORBVocabulary(pVoc),
     mpKeyFrameDB(pKFDB), mpInitializer(static_cast<Initializer*>(NULL)), mpSystem(pSys), mpViewer(NULL),
-    mpFrameDrawer(pFrameDrawer), mpMapDrawer(pMapDrawer), mpMap(pMap), mnLastRelocFrameId(0)
+    mpFrameDrawer(pFrameDrawer), mpMapDrawer(pMapDrawer), mpMap(pMap), mnLastRelocFrameId(0), outfile("time_tracking.txt"), mbResetRequested(false)
 {
     // Load camera parameters from settings file
 
@@ -115,14 +118,22 @@ Tracking::Tracking(System *pSys, ORBVocabulary* pVoc, FrameDrawer *pFrameDrawer,
     int nLevels = fSettings["ORBextractor.nLevels"];
     int fIniThFAST = fSettings["ORBextractor.iniThFAST"];
     int fMinThFAST = fSettings["ORBextractor.minThFAST"];
+    int width = fSettings["Camera.width"];
+    int height = fSettings["Camera.height"];
+    
+    #ifdef CUSTOM_VX_GPU
+    bool gpu = true;
+    #else
+    bool gpu = false;
+    #endif
 
-    mpORBextractorLeft = new ORBextractor(nFeatures,fScaleFactor,nLevels,fIniThFAST,fMinThFAST);
+    mpORBextractorLeft = new ORBextractor(nFeatures,fScaleFactor,nLevels,fIniThFAST,fMinThFAST, width, height, gpu);
 
     if(sensor==System::STEREO)
-        mpORBextractorRight = new ORBextractor(nFeatures,fScaleFactor,nLevels,fIniThFAST,fMinThFAST);
+        mpORBextractorRight = new ORBextractor(nFeatures,fScaleFactor,nLevels,fIniThFAST,fMinThFAST, width, height, gpu);
 
     if(sensor==System::MONOCULAR)
-        mpIniORBextractor = new ORBextractor(2*nFeatures,fScaleFactor,nLevels,fIniThFAST,fMinThFAST);
+        mpIniORBextractor = new ORBextractor(2*nFeatures,fScaleFactor,nLevels,fIniThFAST,fMinThFAST, width, height, gpu);
 
     cout << endl  << "ORB Extractor Parameters: " << endl;
     cout << "- Number of Features: " << nFeatures << endl;
@@ -164,7 +175,7 @@ void Tracking::SetViewer(Viewer *pViewer)
 }
 
 
-cv::Mat Tracking::GrabImageStereo(const cv::Mat &imRectLeft, const cv::Mat &imRectRight, const double &timestamp)
+cv::Mat Tracking::GrabImageStereo(const cv::Mat &imRectLeft, const cv::Mat &imRectRight, const double &timestamp, int sequenceID)
 {
     mImGray = imRectLeft;
     cv::Mat imGrayRight = imRectRight;
@@ -196,7 +207,7 @@ cv::Mat Tracking::GrabImageStereo(const cv::Mat &imRectLeft, const cv::Mat &imRe
         }
     }
 
-    mCurrentFrame = Frame(mImGray,imGrayRight,timestamp,mpORBextractorLeft,mpORBextractorRight,mpORBVocabulary,mK,mDistCoef,mbf,mThDepth);
+    mCurrentFrame = Frame(mImGray,imGrayRight,timestamp,mpORBextractorLeft,mpORBextractorRight,mpORBVocabulary,mK,mDistCoef,mbf,mThDepth, sequenceID);
 
     Track();
 
@@ -204,7 +215,7 @@ cv::Mat Tracking::GrabImageStereo(const cv::Mat &imRectLeft, const cv::Mat &imRe
 }
 
 
-cv::Mat Tracking::GrabImageRGBD(const cv::Mat &imRGB,const cv::Mat &imD, const double &timestamp)
+cv::Mat Tracking::GrabImageRGBD(const cv::Mat &imRGB,const cv::Mat &imD, const double &timestamp, int sequenceID)
 {
     mImGray = imRGB;
     cv::Mat imDepth = imD;
@@ -227,7 +238,7 @@ cv::Mat Tracking::GrabImageRGBD(const cv::Mat &imRGB,const cv::Mat &imD, const d
     if((fabs(mDepthMapFactor-1.0f)>1e-5) || imDepth.type()!=CV_32F)
         imDepth.convertTo(imDepth,CV_32F,mDepthMapFactor);
 
-    mCurrentFrame = Frame(mImGray,imDepth,timestamp,mpORBextractorLeft,mpORBVocabulary,mK,mDistCoef,mbf,mThDepth);
+    mCurrentFrame = Frame(mImGray,imDepth,timestamp,mpORBextractorLeft,mpORBVocabulary,mK,mDistCoef,mbf,mThDepth, sequenceID);
 
     Track();
 
@@ -235,7 +246,7 @@ cv::Mat Tracking::GrabImageRGBD(const cv::Mat &imRGB,const cv::Mat &imD, const d
 }
 
 
-cv::Mat Tracking::GrabImageMonocular(const cv::Mat &im, const double &timestamp)
+cv::Mat Tracking::GrabImageMonocular(const cv::Mat &im, const double &timestamp, int sequenceID)
 {
     mImGray = im;
 
@@ -253,15 +264,68 @@ cv::Mat Tracking::GrabImageMonocular(const cv::Mat &im, const double &timestamp)
         else
             cvtColor(mImGray,mImGray,CV_BGRA2GRAY);
     }
+    
+    cv::Mat tcw = mLastFrame.mTcw.clone();
+    
+#ifdef PIPELINE_FEATURE
+	Frame tmpFrame;
+    #define TEMP_FRAME tmpFrame
+#else
+	#define TEMP_FRAME mCurrentFrame
+#endif    
+    
+    nframe++;
+    outfile << nframe;;
+    std::chrono::steady_clock::time_point t1 = std::chrono::steady_clock::now();
 
-    if(mState==NOT_INITIALIZED || mState==NO_IMAGES_YET)
-        mCurrentFrame = Frame(mImGray,timestamp,mpIniORBextractor,mpORBVocabulary,mK,mDistCoef,mbf,mThDepth);
-    else
-        mCurrentFrame = Frame(mImGray,timestamp,mpORBextractorLeft,mpORBVocabulary,mK,mDistCoef,mbf,mThDepth);
+    if(mState==NOT_INITIALIZED || mState==NO_IMAGES_YET) {
+		outfile << ";INIT";
+        TEMP_FRAME = Frame(mImGray,timestamp,mpIniORBextractor,mpORBVocabulary,mK,mDistCoef,mbf,mThDepth,sequenceID);
+	}
+    else {
+		outfile << ";DONE";
+        TEMP_FRAME = Frame(mImGray,timestamp,mpORBextractorLeft,mpORBVocabulary,mK,mDistCoef,mbf,mThDepth,sequenceID);
+	}
+	
+	std::chrono::steady_clock::time_point t2 = std::chrono::steady_clock::now();
+	outfile << ";" << std::chrono::duration<long long, nano>(t2 - t1).count();
+	std::chrono::microseconds ref_time(70*1000);
+	/*
+	usleep(
+		std::max(
+			std::chrono::microseconds::zero().count(),
+			(ref_time - std::chrono::duration_cast<std::chrono::microseconds>(t2 - t1)).count()
+		)
+	);//*/
 
+#ifdef PIPELINE_FEATURE
+	// push for "thread" execution
+	this->insertElaboratedFrame(tmpFrame);
+	// read from "thread" execution
+	//updateFrame(); //old one: mCurrentFrame = this->getLastFrame();
+	#ifdef WAIT_PIPELINE
+	//if(mpMap->KeyFramesInMap()<=5 || mState == NO_IMAGES_YET || mState == NOT_INITIALIZED)
+		while(!mListFrames.empty()){
+			usleep(1000);
+		}
+	#endif
+#else
+	
     Track();
-
-    return mCurrentFrame.mTcw.clone();
+    
+    std::chrono::steady_clock::time_point t3 = std::chrono::steady_clock::now();
+    outfile << ";" << std::chrono::duration<long long, nano>(t3 - t2).count() << std::endl;
+    
+    /*if(nframe == 1) {
+		std::ofstream of("out_kp.txt");
+		for(cv::KeyPoint k : mCurrentFrame.mpORBextractorLeft->mvKeysToReport) {
+			of << k.pt.x << " - " << k.pt.y << " @ " << k.response << " # " << k.octave << std::endl;
+		}
+	}*/
+	tcw = mCurrentFrame.mTcw.clone();
+#endif
+    //return mCurrentFrame.mTcw.clone();
+    return tcw;//mLastFrameProcessed.mTcw.clone();
 }
 
 void Tracking::Track()
@@ -303,17 +367,34 @@ void Tracking::Track()
             {
                 // Local Mapping might have changed some MapPoints tracked in last frame
                 CheckReplacedInLastFrame();
+                //bool ref = false;
+                //bool mot = false;
 
                 if(mVelocity.empty() || mCurrentFrame.mnId<mnLastRelocFrameId+2)
                 {
                     bOK = TrackReferenceKeyFrame();
+                    //ref = true;
                 }
                 else
                 {
+					//mot = true;
                     bOK = TrackWithMotionModel();
-                    if(!bOK)
+                    if(!bOK) {
                         bOK = TrackReferenceKeyFrame();
+                        //ref = true;
+					}
                 }
+                /*
+                if(ref && !mot) {
+					std::cout << " | Track on reference kf, result: " << bOK << std::endl;
+				} else if(mot && !ref){
+					std::cout << " | Track on motion, result:       " << bOK << std::endl;
+				} else if(mot && ref) {
+					std::cout << " | Track motion fail, kf result:  " << bOK << std::endl;
+				} else {
+					std::cout << " | WHY AM I HERE! RESULT:         " << bOK << std::endl;
+				}*/
+                
             }
             else
             {
@@ -397,8 +478,10 @@ void Tracking::Track()
         // If we have an initial estimation of the camera pose and matching. Track the local map.
         if(!mbOnlyTracking)
         {
-            if(bOK)
+            if(bOK) {
                 bOK = TrackLocalMap();
+                //std::cout << " | Track local map, result:       " << bOK << std::endl;
+			}
         }
         else
         {
@@ -474,7 +557,11 @@ void Tracking::Track()
             if(mpMap->KeyFramesInMap()<=5)
             {
                 cout << "Track lost soon after initialisation, reseting..." << endl;
+                #ifdef PIPELINE_FEATURE
+                Reset();
+                #else
                 mpSystem->Reset();
+                #endif
                 return;
             }
         }
@@ -491,17 +578,17 @@ void Tracking::Track()
         cv::Mat Tcr = mCurrentFrame.mTcw*mCurrentFrame.mpReferenceKF->GetPoseInverse();
         mlRelativeFramePoses.push_back(Tcr);
         mlpReferences.push_back(mpReferenceKF);
-        mlFrameTimes.push_back(mCurrentFrame.mTimeStamp);
-        mlbLost.push_back(mState==LOST);
     }
     else
     {
         // This can happen if tracking is lost
         mlRelativeFramePoses.push_back(mlRelativeFramePoses.back());
         mlpReferences.push_back(mlpReferences.back());
-        mlFrameTimes.push_back(mlFrameTimes.back());
-        mlbLost.push_back(mState==LOST);
     }
+    mlFrameTimes.push_back(mCurrentFrame.mTimeStamp);
+    mlbLost.push_back(mState==LOST);
+    
+    mliSequenceID.push_back(mCurrentFrame.sequenceID);
 
 }
 
@@ -1045,6 +1132,23 @@ bool Tracking::NeedNewKeyFrame()
         else
         {
             mpLocalMapper->InterruptBA();
+            mliSequenceIDMap.push_back(mCurrentFrame.sequenceID);
+            
+            #if MAPPING_SYNC == 1
+            //buffer
+                if(mpLocalMapper->KeyframesInQueue()<3)
+                    return true;
+                else
+                    return false;
+            #elif MAPPING_SYNC == 2
+            //sync
+            std::cout << "Wait execution...";
+            mpLocalMapper->WaitLoopExecution();
+            std::cout << "DONE" << std::endl;
+            return true;
+            #else
+            //standard: Mapping_sync == 0 or undefined
+            //#if MAPPING_SYNC == 0
             if(mSensor!=System::MONOCULAR)
             {
                 if(mpLocalMapper->KeyframesInQueue()<3)
@@ -1054,6 +1158,8 @@ bool Tracking::NeedNewKeyFrame()
             }
             else
                 return false;
+            
+            #endif
         }
     }
     else
@@ -1503,7 +1609,21 @@ bool Tracking::Relocalization()
 
 void Tracking::Reset()
 {
+#ifdef PIPELINE_FEATURE
+	std::lock_guard<std::mutex> lock(mMutexReset);
+	mbResetRequested = true;
+#else
+	ResetAction();
+#endif
+}
+bool Tracking::ResetRequested()
+{
+	std::lock_guard<std::mutex> lock(mMutexReset);
+	return mbResetRequested;
+}
 
+void Tracking::ResetAction()
+{
     cout << "System Reseting" << endl;
     if(mpViewer)
     {
@@ -1544,9 +1664,14 @@ void Tracking::Reset()
     mlpReferences.clear();
     mlFrameTimes.clear();
     mlbLost.clear();
+    
+    mliSequenceID.clear();
+    mliSequenceIDMap.clear();
 
     if(mpViewer)
         mpViewer->Release();
+        
+    mbResetRequested = false;
 }
 
 void Tracking::ChangeCalibration(const string &strSettingPath)
@@ -1588,5 +1713,86 @@ void Tracking::InformOnlyTracking(const bool &flag)
 }
 
 
+void Tracking::insertElaboratedFrame(Frame &f) {
+	//std::cout << "Going to acquire " << std::endl;
+	std::lock_guard<std::mutex> lock(lockListFrames);
+	//std::cout << "Sequence elab: " << f.sequenceID << std::endl;
+	mListFrames.push_front(Frame(f));
+	canElaborateFrame.notify();
+	//std::cout << "Going to release " << std::endl;
+}
+
+void Tracking::updateFrame() {
+	//wait a single frame is ready
+	do{
+		//std::cout << "UPDATE FRAME" << std::endl;
+		canElaborateFrame.wait();
+		std::lock_guard<std::mutex> lock(lockListFrames);
+		if(!mListFrames.empty()) {
+			//take the first one
+			auto beg = mListFrames.begin();
+			mCurrentFrame = Frame(*(mListFrames.begin()));
+			
+			auto end = mListFrames.end();
+			mListFrames.erase(beg, end);
+			
+			//std::cout << "END UPDATE FRAME" << std::endl;
+			//std::cout << "Sequence trac: " << mCurrentFrame.sequenceID << std::endl;
+			return;
+		}
+		//std::cout << "RE-SETUPDATE FRAME" << std::endl;
+	}while(CheckFinish());
+}
+
+void Tracking::Run() {
+	while(!CheckFinish()) {
+		updateFrame();
+		if(CheckFinish()) break;
+		
+		if(ResetRequested()) {
+			ResetAction();
+		}
+		Track();
+		
+		// update timing info
+		
+	}
+	
+	SetFinish();
+}
+
+void Tracking::RequestFinish()
+{
+	{
+		std::lock_guard<std::mutex> lock(mMutexFinish);
+		mbFinishRequested = true;
+	}
+    
+#ifndef PIPELINE_FEATURE
+    //TODO: temp implementation
+    SetFinish();
+#else
+	// avoid deadlock
+	insertElaboratedFrame(mCurrentFrame);
+#endif
+}
+
+bool Tracking::CheckFinish()
+{
+    std::lock_guard<std::mutex> lock(mMutexFinish);
+    return mbFinishRequested;
+}
+
+void Tracking::SetFinish()
+{
+    std::lock_guard<std::mutex> lock(mMutexFinish);
+    mbFinished = true;
+}
+
+bool Tracking::isFinished()
+{
+    std::lock_guard<std::mutex> lock(mMutexFinish);
+    return mbFinished;
+}
 
 } //namespace ORB_SLAM

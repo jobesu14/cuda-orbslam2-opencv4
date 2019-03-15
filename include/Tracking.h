@@ -58,9 +58,9 @@ public:
              KeyFrameDatabase* pKFDB, const string &strSettingPath, const int sensor);
 
     // Preprocess the input and call Track(). Extract features and performs stereo matching.
-    cv::Mat GrabImageStereo(const cv::Mat &imRectLeft,const cv::Mat &imRectRight, const double &timestamp);
-    cv::Mat GrabImageRGBD(const cv::Mat &imRGB,const cv::Mat &imD, const double &timestamp);
-    cv::Mat GrabImageMonocular(const cv::Mat &im, const double &timestamp);
+    cv::Mat GrabImageStereo(const cv::Mat &imRectLeft,const cv::Mat &imRectRight, const double &timestamp, int sequenceID);
+    cv::Mat GrabImageRGBD(const cv::Mat &imRGB,const cv::Mat &imD, const double &timestamp, int sequenceID);
+    cv::Mat GrabImageMonocular(const cv::Mat &im, const double &timestamp, int sequenceID);
 
     void SetLocalMapper(LocalMapping* pLocalMapper);
     void SetLoopClosing(LoopClosing* pLoopClosing);
@@ -74,6 +74,14 @@ public:
     // Use this function if you have deactivated local mapping and you only want to localize the camera.
     void InformOnlyTracking(const bool &flag);
 
+
+	// Main function
+    void Run();
+    
+    void RequestFinish();
+    bool isFinished();
+    bool CheckFinish();
+    void SetFinish();
 
 public:
 
@@ -93,8 +101,19 @@ public:
     int mSensor;
 
     // Current Frame
+    Frame mLastFrameProcessed;
     Frame mCurrentFrame;
+    std::list<Frame> mListFrames;
+    std::mutex lockListFrames;
+    SemaphoreMax canElaborateFrame;
     cv::Mat mImGray;
+    
+    bool mbFinishRequested;
+    bool mbFinished;
+    std::mutex mMutexFinish;
+    
+    bool mbResetRequested;
+    std::mutex mMutexReset;
 
     // Initialization Variables (Monocular)
     std::vector<int> mvIniLastMatches;
@@ -109,11 +128,16 @@ public:
     list<KeyFrame*> mlpReferences;
     list<double> mlFrameTimes;
     list<bool> mlbLost;
+    list<int> mliSequenceID;
+    list<int> mliSequenceIDMap;
 
     // True if local mapping is deactivated and we are performing only localization
     bool mbOnlyTracking;
 
     void Reset();
+    
+    void insertElaboratedFrame(Frame& f);
+    void updateFrame();
 
 protected:
 
@@ -143,6 +167,9 @@ protected:
 
     bool NeedNewKeyFrame();
     void CreateNewKeyFrame();
+    
+    bool ResetRequested();
+    void ResetAction();
 
     // In case of performing only localization, this flag is true when there are no matches to
     // points in the map. Still tracking will continue if there are enough matches with temporal points.
@@ -214,6 +241,9 @@ protected:
     bool mbRGB;
 
     list<MapPoint*> mlpTemporalPoints;
+    
+    int nframe = 0;
+    ofstream outfile;
 };
 
 } //namespace ORB_SLAM

@@ -28,6 +28,8 @@
 #include "System.h"
 
 #include <mutex>
+#include <string>
+#include <deque>
 
 namespace ORB_SLAM2
 {
@@ -55,7 +57,9 @@ public:
     bool isStopped();
 
     void Release();
-
+    
+    void push_back(std::string s, cv::Mat img);
+	static Viewer* viewer;
 private:
 
     bool Stop();
@@ -80,6 +84,9 @@ private:
     bool mbStopped;
     bool mbStopRequested;
     std::mutex mMutexStop;
+    
+    std::deque<std::string> wnds;
+    std::deque<cv::Mat> imgs;
 
 };
 

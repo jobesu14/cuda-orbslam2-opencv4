@@ -30,7 +30,7 @@ namespace ORB_SLAM2
 
 LocalMapping::LocalMapping(Map *pMap, const float bMonocular):
     mbMonocular(bMonocular), mbResetRequested(false), mbFinishRequested(false), mbFinished(true), mpMap(pMap),
-    mbAbortBA(false), mbStopped(false), mbStopRequested(false), mbNotStop(false), mbAcceptKeyFrames(true)
+    mbAbortBA(false), mbStopped(false), mbStopRequested(false), mbNotStop(false), mbAcceptKeyFrames(true), outfile("mapping.txt")
 {
 }
 
@@ -51,60 +51,72 @@ void LocalMapping::Run()
 
     while(1)
     {
-        // Tracking will see that Local Mapping is busy
-        SetAcceptKeyFrames(false);
+		{
+			std::lock_guard<std::mutex> lock(mMutexExecution);
+			// Tracking will see that Local Mapping is busy
+			SetAcceptKeyFrames(false);
 
-        // Check if there are keyframes in the queue
-        if(CheckNewKeyFrames())
-        {
-            // BoW conversion and insertion in Map
-            ProcessNewKeyFrame();
+			// Check if there are keyframes in the queue
+			if(CheckNewKeyFrames())
+			{
+				auto time_start = std::chrono::steady_clock::now();
+				// BoW conversion and insertion in Map
+				ProcessNewKeyFrame();
 
-            // Check recent MapPoints
-            MapPointCulling();
+				// Check recent MapPoints
+				MapPointCulling();
 
-            // Triangulate new MapPoints
-            CreateNewMapPoints();
+				// Triangulate new MapPoints
+				CreateNewMapPoints();
 
-            if(!CheckNewKeyFrames())
-            {
-                // Find more matches in neighbor keyframes and fuse point duplications
-                SearchInNeighbors();
-            }
+				if(!CheckNewKeyFrames())
+				{
+					// Find more matches in neighbor keyframes and fuse point duplications
+					SearchInNeighbors();
+				}
 
-            mbAbortBA = false;
+				//std::cout << " * Reset mbAbortBA" << std::endl;
+				mbAbortBA = false;
 
-            if(!CheckNewKeyFrames() && !stopRequested())
-            {
-                // Local BA
-                if(mpMap->KeyFramesInMap()>2)
-                    Optimizer::LocalBundleAdjustment(mpCurrentKeyFrame,&mbAbortBA, mpMap);
+				if(!CheckNewKeyFrames() && !stopRequested())
+				{
+					// Local BA
+					if(mpMap->KeyFramesInMap()>2)
+						Optimizer::LocalBundleAdjustment(mpCurrentKeyFrame,&mbAbortBA, mpMap);
 
-                // Check redundant local Keyframes
-                KeyFrameCulling();
-            }
+					// Check redundant local Keyframes
+					KeyFrameCulling();
+				}
 
-            mpLoopCloser->InsertKeyFrame(mpCurrentKeyFrame);
-        }
-        else if(Stop())
-        {
-            // Safe area to stop
-            while(isStopped() && !CheckFinish())
-            {
-                usleep(3000);
-            }
-            if(CheckFinish())
-                break;
-        }
+				mpLoopCloser->InsertKeyFrame(mpCurrentKeyFrame);
+				
+				auto time_end = std::chrono::steady_clock::now();
+				
+				outfile << mpCurrentKeyFrame->sequenceID << ";"
+						<< std::chrono::duration<double, std::ratio<1>> (time_end - time_start).count() << std::endl;
+			}
+			else if(Stop())
+			{
+				mMutexExecution.unlock();
+				// Safe area to stop
+				while(isStopped() && !CheckFinish())
+				{
+					usleep(3000);
+				}
+				mMutexExecution.lock();
+				if(CheckFinish())
+					break;
+			}
 
-        ResetIfRequested();
+			ResetIfRequested();
 
-        // Tracking will see that Local Mapping is busy
-        SetAcceptKeyFrames(true);
+			// Tracking will see that Local Mapping is busy
+			SetAcceptKeyFrames(true);
 
-        if(CheckFinish())
-            break;
+			if(CheckFinish())
+				break;
 
+		}
         usleep(3000);
     }
 
@@ -116,6 +128,11 @@ void LocalMapping::InsertKeyFrame(KeyFrame *pKF)
     unique_lock<mutex> lock(mMutexNewKFs);
     mlNewKeyFrames.push_back(pKF);
     mbAbortBA=true;
+}
+
+void LocalMapping::WaitLoopExecution()
+{
+	std::lock_guard<std::mutex> lock(mMutexExecution);
 }
 
 

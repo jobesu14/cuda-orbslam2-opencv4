@@ -1,0 +1,7 @@
+////#define SCALE_FACTOR_C 0.8408964f
+//#define SCALE_FACTOR_C 0.833333f
+#define LEVELS_C 8
+//#define N_FEATURES_C 2000
+#define PATCH_SIZE_C 31
+#define HALF_PATCH_SIZE_C 15
+#define WINDOW_SIZE_C 30

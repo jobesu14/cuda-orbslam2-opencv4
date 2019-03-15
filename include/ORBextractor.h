@@ -25,6 +25,7 @@
 #include <list>
 #include <opencv/cv.h>
 
+#include "functions.hpp"
 
 namespace ORB_SLAM2
 {
@@ -32,14 +33,18 @@ namespace ORB_SLAM2
 class ExtractorNode
 {
 public:
-    ExtractorNode():bNoMore(false){}
+    ExtractorNode();
+    ExtractorNode(const ExtractorNode& n);
 
     void DivideNode(ExtractorNode &n1, ExtractorNode &n2, ExtractorNode &n3, ExtractorNode &n4);
+    void increaseId();
 
     std::vector<cv::KeyPoint> vKeys;
     cv::Point2i UL, UR, BL, BR;
     std::list<ExtractorNode>::iterator lit;
     bool bNoMore;
+    static int globalId;
+    int localId;
 };
 
 class ORBextractor
@@ -49,7 +54,7 @@ public:
     enum {HARRIS_SCORE=0, FAST_SCORE=1 };
 
     ORBextractor(int nfeatures, float scaleFactor, int nlevels,
-                 int iniThFAST, int minThFAST);
+                 int iniThFAST, int minThFAST, int width, int height, bool gpu);
 
     ~ORBextractor(){}
 
@@ -58,7 +63,7 @@ public:
     // Mask is ignored in the current implementation.
     void operator()( cv::InputArray image, cv::InputArray mask,
       std::vector<cv::KeyPoint>& keypoints,
-      cv::OutputArray descriptors);
+      cv::OutputArray descriptors, bool custom);
 
     int inline GetLevels(){
         return nlevels;}
@@ -83,15 +88,24 @@ public:
     }
 
     std::vector<cv::Mat> mvImagePyramid;
+    std::vector<cv::KeyPoint> mvKeysToReport;
+    cv::Mat descriptorToReport;
+    
+    
+    static void computeOrientation(const cv::Mat& image, std::vector<cv::KeyPoint>& keypoints, const std::vector<int>& umax);
+	static void computeDescriptors(const cv::Mat& image, std::vector<cv::KeyPoint>& keypoints, cv::Mat& descriptors,
+                               const std::vector<cv::Point>& pattern);
 
-protected:
+public://protected:
 
+	
     void ComputePyramid(cv::Mat image);
-    void ComputeKeyPointsOctTree(std::vector<std::vector<cv::KeyPoint> >& allKeypoints);    
+    void ComputeKeyPointsFASTLevel(std::vector<cv::KeyPoint>& vToDistributeKeys, int level);
+    void ComputeKeyPointsOctTreeLevel(std::vector<cv::KeyPoint>& keypoint, int level);
+    void ComputeKeyPointsOctTree(std::vector<std::vector<cv::KeyPoint> >& allKeypoints);
     std::vector<cv::KeyPoint> DistributeOctTree(const std::vector<cv::KeyPoint>& vToDistributeKeys, const int &minX,
                                            const int &maxX, const int &minY, const int &maxY, const int &nFeatures, const int &level);
 
-    void ComputeKeyPointsOld(std::vector<std::vector<cv::KeyPoint> >& allKeypoints);
     std::vector<cv::Point> pattern;
 
     int nfeatures;
@@ -108,6 +122,8 @@ protected:
     std::vector<float> mvInvScaleFactor;    
     std::vector<float> mvLevelSigma2;
     std::vector<float> mvInvLevelSigma2;
+    
+    ORBFunctions* custom_graph;
 };
 
 } //namespace ORB_SLAM
