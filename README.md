@@ -88,4 +88,8 @@ From the project folder go into the *build* subfolder and run the follow command
 
 If all works fine you should see the execution below:
 
+⚠️ Edit parameters on the .yaml file
 
+> **Note:** Only the KITTI04-12.yaml in the Examples subfolder is expected to run. This is because there are two parameters that must be set to 
+> - Camera.width: the width of the image (different KITTI streams has different widths)
+> - Camera.height: the height of the image (different KITTI streams has different heights)
