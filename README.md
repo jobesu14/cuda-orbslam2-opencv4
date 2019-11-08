@@ -8,6 +8,11 @@ This implementation aims to target better efficiency in the feature extraction p
 
 > **Note:** The library is intended to be built & run on **NVIDIA Jetson TX2** with **JetPack 4.2.2**, but it should works fine with the newer versions as well.
 
+### Related Publications:
+
+Stefano Aldegheri, Nicola Bombieri, Daniele D. Bloisi and Alessandro Farinelli. **Data Flow ORB-SLAM for Real-time Performance
+on Embedded GPU Boards**. *IEEE/RSJ International Conference on Intelligent Robots and Systems*. **[PDF](https://www.dropbox.com/s/p3bh0lfi5ahe28e/IROS2019.pdf?dl=0)**.
+
 ## 1. Setting up NVIDIA Jetson with JetPack
 
 NVIDIA [JetPack](https://developer.nvidia.com/embedded/jetpack) is a comprehensive SDK for Jetson for both developing and deploying AI and computer vision applications. JetPack simplifies installation of the OS and drivers and contains the following components:
