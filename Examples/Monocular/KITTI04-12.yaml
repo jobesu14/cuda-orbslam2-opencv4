@@ -20,7 +20,7 @@ Camera.fps: 10.0
 
 # Specific values for OpenVX (at least for now!)
 Camera.width: 1226
-Camera.width: 370
+Camera.height: 370
 
 
 # Color order of the images (0: BGR, 1: RGB. It is ignored if images are grayscale)
